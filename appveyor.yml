@@ -1,0 +1,71 @@
+skip_commits:
+  files:
+    - appveyor.yml
+    - README.md
+init:
+  - ps: |
+      if ($env:APPVEYOR_REPO_TAG -eq "true")
+      {
+        Update-AppveyorBuild -Version "$($env:APPVEYOR_REPO_TAG_NAME.TrimStart("v"))"
+      }
+      else
+      {
+        Update-AppveyorBuild -Version "0.0.$($env:APPVEYOR_BUILD_NUMBER)"
+      }
+
+environment:
+    nuget_api_key:
+      secure: 4HmcYasXmCps4URyA53dat5hyqyvIQzTE3IS7GcVFuJgad2Bn1hkKoE8qUH9fpso
+
+install:
+  - ps: Install-PackageProvider Nuget –Force
+  - ps: Set-PSRepository -Name PSGallery -InstallationPolicy Trusted 
+  - ps: Install-Module -Name PSScriptAnalyzer -Force
+
+build_script:
+  - ps: |
+      $versionParts = ($env:APPVEYOR_BUILD_VERSION).split('.')
+      Import-Module .\PSNessus
+      $moduleInfo = Get-Module -Name PSNessus
+      $newVersion = New-Object -TypeName 'System.Version' -ArgumentList @($versionParts[0],$versionParts[1],$versionParts[2],$versionParts[3])
+      $FunctionsToExport = @()
+      foreach($key in $moduleInfo.ExportedFunctions.Keys) {
+          $FunctionsToExport += $key
+      }
+      $projectUri = [uri]'https://github.com/davidski/PSNessus'
+      $projectLicense = [uri]'https://github.com/davidski/PSNessus/LICENSE'
+      $tags = @('tenable', 'nessus', 'security', 'network', 'vulnerability', 'api')
+      New-ModuleManifest -Path .\PSNessus\PSNessus.psd1 -Guid $moduleInfo.Guid -Author $moduleInfo.Author -CompanyName $moduleInfo.CompanyName `
+          -Copyright $moduleInfo.Copyright -RootModule $moduleInfo.RootModule -ModuleVersion $newVersion -Description $moduleInfo.Description `
+          -FunctionsToExport $FunctionsToExport  -CmdletsToExport '' `
+          -AliasesToExport '' -VariablesToExport '' -tags $tags -LicenseUri $projectLicense `
+          -ProjectUri $projectUri
+  - 7z a PSNessus.zip %APPVEYOR_BUILD_FOLDER%\PSNessus\*
+  - ps: Get-ChildItem .\PSNessus.zip | % {Push-AppveyorArtifact $_.FullName -FileName $_.Name }
+
+test_script:
+  - ps: |
+      $res = Invoke-ScriptAnalyzer -Path $ENV:APPVEYOR_BUILD_FOLDER\PSNessus\* -Settings $ENV:APPVEYOR_BUILD_FOLDER\PSNessus\PSScriptAnalyzerSettings.psd1
+      # Format the results
+      $header = "<testsuite tests=`"$($results.Count)`">"
+      $body = $results | ForEach-Object {"<testcase classname=`"analyzer`" name=`"$($_.RuleName)`"><failure type=`"$($_.ScriptName)`">$($_.Message)</failure></testcase>"}
+      $footer = "</testsuite>"
+      $header + $body + $footer | out-file .\TestsResults.xml
+      # Upload results
+      $wc = New-Object 'System.Net.WebClient'
+      $wc.UploadFile("https://ci.appveyor.com/api/testresults/junit/$($env:APPVEYOR_JOB_ID)", (Resolve-Path .\TestsResults.xml))
+      # Fail if there are issues
+      if ($res.Count -gt 0) { throw "$($res.Count) tests failed."}
+      # If on a GH tag, push to PS Gallery
+      if ($env:APPVEYOR_REPO_TAG -eq "true") {
+          Publish-Module -Path $ENV:APPVEYOR_BUILD_FOLDER\PSNessus -NuGetApiKey $Env:NUGET_API_KEY
+      }
+
+deploy:
+  - provider: GitHub
+    draft: true
+    description: 'AppVeyor generated build'
+    on:
+      appveyor_repo_tag: true
+    auth_token:
+      secure: ANstD90CPeaEG/JTUq4pw8/s0UaGDmIomjvVt3f2tPqnFdD2VhPF8DOlP5AAP2lX
